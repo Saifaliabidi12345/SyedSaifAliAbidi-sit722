@@ -69,7 +69,7 @@ jobs:
       # 🔹 Extract registry name (remove .azurecr.io)
       - name: Extract ACR name
         id: acr
-        run: echo "##[set-output name=name;]${ACR_LOGIN_SERVER%%.azurecr.io}"
+        run: echo "name=${ACR_LOGIN_SERVER%%.azurecr.io}" >> $GITHUB_OUTPUT
 
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ steps.acr.outputs.name }}
