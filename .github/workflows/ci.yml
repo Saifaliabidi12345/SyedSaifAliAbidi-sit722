@@ -1,0 +1,66 @@
+name: CI - Build, Test & Push Images
+
+on:
+  push:
+    branches:
+      - main
+      - testing
+  pull_request:
+    branches:
+      - main
+      - testing
+
+jobs:
+  build_test_push:
+    runs-on: ubuntu-latest
+
+    env:
+      REGISTRY: ${{ secrets.ACR_NAME }}.azurecr.io
+      IMAGE_TAG: latest
+
+    steps:
+      # 1️⃣ Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 2️⃣ Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.10
+
+      # 3️⃣ Install dependencies
+      - name: Install backend dependencies
+        run: |
+          pip install -r backend/customer_service/requirements-dev.txt
+          pip install -r backend/order_service/requirements-dev.txt
+          pip install -r backend/product_service/requirements-dev.txt
+
+      # 4️⃣ Run pytest
+      - name: Run backend tests
+        working-directory: ./backend
+        run: pytest
+
+      # 5️⃣ Log in to Azure Container Registry
+      - name: Log in to ACR
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      # 6️⃣ Build Docker images
+      - name: Build Docker images
+        run: |
+          docker build -t $REGISTRY/customer-service:$IMAGE_TAG ./backend/customer_service
+          docker build -t $REGISTRY/order-service:$IMAGE_TAG ./backend/order_service
+          docker build -t $REGISTRY/product-service:$IMAGE_TAG ./backend/product_service
+          docker build -t $REGISTRY/frontend:$IMAGE_TAG ./frontend
+
+      # 7️⃣ Push Docker images
+      - name: Push Docker images
+        run: |
+          docker push $REGISTRY/customer-service:$IMAGE_TAG
+          docker push $REGISTRY/order-service:$IMAGE_TAG
+          docker push $REGISTRY/product-service:$IMAGE_TAG
+          docker push $REGISTRY/frontend:$IMAGE_TAG

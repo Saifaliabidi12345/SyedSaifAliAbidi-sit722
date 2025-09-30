@@ -1,0 +1,82 @@
+name: CD - Deploy to AKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment (staging or prod)"
+        required: true
+        default: "staging"
+      aks_cluster_name:
+        description: "AKS cluster name"
+        required: true
+        default: "<your-aks-name>"
+      aks_resource_group:
+        description: "Resource group containing AKS"
+        required: true
+        default: "<your-rg>"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      # 1️⃣ Checkout repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️⃣ Azure login
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      # 3️⃣ Extract ACR name
+      - name: Extract ACR name
+        id: acr
+        run: echo "name=${ACR_LOGIN_SERVER%%.azurecr.io}" >> $GITHUB_OUTPUT
+        env:
+          ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
+
+      # 4️⃣ Login to ACR
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ steps.acr.outputs.name }}
+
+      # 5️⃣ Set Kubernetes context
+      - name: Set Kubernetes context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ github.event.inputs.aks_resource_group }}
+          cluster-name: ${{ github.event.inputs.aks_cluster_name }}
+
+      # 6️⃣ Deploy manifests
+      - name: Deploy to AKS
+        run: |
+          ENV=${{ github.event.inputs.environment }}
+          if [ "$ENV" = "prod" ]; then
+            TAG="prod-${GITHUB_SHA}"
+          else
+            TAG="staging-${GITHUB_SHA}"
+          fi
+
+          echo "Deploying with image tag: $TAG"
+
+          cd k8s/
+
+          # Update image tags in manifests
+          sed -i "s|IMAGE_TAG|$TAG|g" frontend.yaml
+          sed -i "s|IMAGE_TAG|$TAG|g" customer.yaml
+          sed -i "s|IMAGE_TAG|$TAG|g" order.yaml
+          sed -i "s|IMAGE_TAG|$TAG|g" product.yaml
+
+          # Apply namespace first
+          kubectl apply -f namespace.yaml
+
+          # Deploy all services to staging/prod namespace
+          kubectl apply -n $ENV -f .
+
+      # 7️⃣ Logout
+      - name: Logout from Azure
+        run: az logout
+        if: always()
