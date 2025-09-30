@@ -1,0 +1,64 @@
+name: Deploy Staging
+on:
+  workflow_run:
+    workflows: ["CI-tests-and-push"]
+    types:
+      - completed
+
+jobs:
+  deploy-staging:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'testing' }}
+    runs-on: ubuntu-latest
+    env:
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+      STAGING_RG: staging-rg-${{ github.run_id }}
+      STAGING_AKS: staging-aks-${{ github.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Create Resource Group (staging)
+        run: az group create -n $STAGING_RG -l eastus
+
+      - name: Create AKS cluster (staging) - **may take 7-15 minutes**
+        run: |
+          az aks create -n $STAGING_AKS -g $STAGING_RG --node-count 1 --generate-ssh-keys --enable-managed-identity
+          az aks update -n $STAGING_AKS -g $STAGING_RG --attach-acr ${{ secrets.ACR_NAME }}
+
+      - name: Get AKS credentials
+        run: az aks get-credentials -n $STAGING_AKS -g $STAGING_RG --overwrite-existing
+
+      - name: Replace image placeholders with commit SHA
+        run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          sed -i "s|<ACR_LOGIN_SERVER>|${{ env.ACR_LOGIN_SERVER }}|g" k8s/*.yaml
+          sed -i "s|<IMAGE_TAG>|${SHA}|g" k8s/*.yaml
+
+      - name: Deploy to AKS (apply manifests)
+        run: kubectl apply -f k8s/
+
+      - name: Wait for frontend to have external IP
+        run: |
+          for i in {1..30}; do
+            IP=$(kubectl get svc frontend-service -n staging -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
+            if [ -n "$IP" ]; then echo "IP=$IP" && break; fi
+            echo "Waiting for external IP..." && sleep 10
+          done
+          echo "FRONTEND_IP=$IP" >> $GITHUB_ENV
+
+      - name: Run simple acceptance test (curl)
+        run: |
+          curl -f http://$FRONTEND_IP/ || (kubectl get pods -n staging && exit 1)
+
+      - name: Take pre-delete screenshots/logs
+        run: |
+          kubectl get all -n staging -o wide
+          kubectl describe svc frontend-service -n staging
+
+      - name: Destroy staging (resource group)
+        run: az group delete -n $STAGING_RG --yes --no-wait
