@@ -1,20 +1,28 @@
-name: Deploy Staging
+name: CD - Deploy to AKS
+
 on:
-  workflow_run:
-    workflows: ["CI-tests-and-push"]
-    types:
-      - completed
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Deployment environment (staging or prod)"
+        required: true
+        default: "staging"
+      aks_cluster_name:
+        description: "AKS cluster name"
+        required: true
+        default: "<your-aks-name>"
+      aks_resource_group:
+        description: "Resource group containing AKS"
+        required: true
+        default: "<your-rg>"
 
 jobs:
-  deploy-staging:
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'testing' }}
+  deploy:
     runs-on: ubuntu-latest
-    env:
-      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-      STAGING_RG: staging-rg-${{ github.run_id }}
-      STAGING_AKS: staging-aks-${{ github.run_id }}
+    environment: ${{ github.event.inputs.environment }}
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Azure Login
@@ -22,43 +30,43 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Create Resource Group (staging)
-        run: az group create -n $STAGING_RG -l eastus
+      # Extract registry name
+      - name: Extract ACR name
+        id: acr
+        run: echo "##[set-output name=name;]${ACR_LOGIN_SERVER%%.azurecr.io}"
+        env:
+          ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
 
-      - name: Create AKS cluster (staging) - **may take 7-15 minutes**
+      - name: Login to Azure Container Registry
+        run: az acr login --name ${{ steps.acr.outputs.name }}
+
+      - name: Set Kubernetes context
+        uses: azure/aks-set-context@v3
+        with:
+          resource-group: ${{ github.event.inputs.aks_resource_group }}
+          cluster-name: ${{ github.event.inputs.aks_cluster_name }}
+
+      - name: Deploy manifests
         run: |
-          az aks create -n $STAGING_AKS -g $STAGING_RG --node-count 1 --generate-ssh-keys --enable-managed-identity
-          az aks update -n $STAGING_AKS -g $STAGING_RG --attach-acr ${{ secrets.ACR_NAME }}
+          ENV=${{ github.event.inputs.environment }}
+          if [ "$ENV" = "prod" ]; then
+            TAG="prod-${GITHUB_SHA}"
+          else
+            TAG="staging-${GITHUB_SHA}"
+          fi
 
-      - name: Get AKS credentials
-        run: az aks get-credentials -n $STAGING_AKS -g $STAGING_RG --overwrite-existing
+          echo "Deploying with image tag: $TAG"
 
-      - name: Replace image placeholders with commit SHA
-        run: |
-          SHA=${{ github.event.workflow_run.head_sha }}
-          sed -i "s|<ACR_LOGIN_SERVER>|${{ env.ACR_LOGIN_SERVER }}|g" k8s/*.yaml
-          sed -i "s|<IMAGE_TAG>|${SHA}|g" k8s/*.yaml
+          cd k8s/
 
-      - name: Deploy to AKS (apply manifests)
-        run: kubectl apply -f k8s/
+          # Update manifests with correct image tags
+          sed -i "s|IMAGE_TAG|$TAG|g" frontend.yaml
+          sed -i "s|IMAGE_TAG|$TAG|g" customer-service.yaml
+          sed -i "s|IMAGE_TAG|$TAG|g" order-service.yaml
+          sed -i "s|IMAGE_TAG|$TAG|g" product-service.yaml
 
-      - name: Wait for frontend to have external IP
-        run: |
-          for i in {1..30}; do
-            IP=$(kubectl get svc frontend-service -n staging -o jsonpath='{.status.loadBalancer.ingress[0].ip}' || true)
-            if [ -n "$IP" ]; then echo "IP=$IP" && break; fi
-            echo "Waiting for external IP..." && sleep 10
-          done
-          echo "FRONTEND_IP=$IP" >> $GITHUB_ENV
+          kubectl apply -f .
 
-      - name: Run simple acceptance test (curl)
-        run: |
-          curl -f http://$FRONTEND_IP/ || (kubectl get pods -n staging && exit 1)
-
-      - name: Take pre-delete screenshots/logs
-        run: |
-          kubectl get all -n staging -o wide
-          kubectl describe svc frontend-service -n staging
-
-      - name: Destroy staging (resource group)
-        run: az group delete -n $STAGING_RG --yes --no-wait
+      - name: Logout from Azure
+        run: az logout
+        if: always()
