@@ -9,80 +9,58 @@ on:
     branches:
       - main
       - testing
-  workflow_dispatch:
-
-env:
-  ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
-  IMAGE_TAG: ${{ github.sha }}
 
 jobs:
   build_test_push:
     runs-on: ubuntu-latest
 
+    env:
+      REGISTRY: ${{ secrets.ACR_NAME }}.azurecr.io
+      IMAGE_TAG: latest
+
     steps:
-      # 1️⃣ Checkout repo
+      # 1️⃣ Checkout code
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      # 2️⃣ Setup Python for backend testing
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      # 2️⃣ Set up Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: 3.10
 
-      # 3️⃣ Install backend dev dependencies
+      # 3️⃣ Install dependencies
       - name: Install backend dependencies
         run: |
           pip install -r backend/customer_service/requirements-dev.txt
           pip install -r backend/order_service/requirements-dev.txt
           pip install -r backend/product_service/requirements-dev.txt
 
-      # 4️⃣ Run backend tests
+      # 4️⃣ Run pytest
       - name: Run backend tests
-        run: pytest backend/
+        working-directory: ./backend
+        run: pytest
 
-      # 5️⃣ Azure login
-      - name: Azure Login
-        uses: azure/login@v1
+      # 5️⃣ Log in to Azure Container Registry
+      - name: Log in to ACR
+        uses: azure/docker-login@v1
         with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          login-server: ${{ secrets.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
 
-      # 6️⃣ Extract ACR name
-      - name: Extract ACR name
-        id: acr
-        run: echo "name=${ACR_LOGIN_SERVER%%.azurecr.io}" >> $GITHUB_OUTPUT
-
-      # 7️⃣ Login to ACR
-      - name: Login to Azure Container Registry
-        run: az acr login --name ${{ steps.acr.outputs.name }}
-
-      # 8️⃣ Build and push Docker images
-      - name: Build and Push Docker Images
+      # 6️⃣ Build Docker images
+      - name: Build Docker images
         run: |
-          BRANCH=${GITHUB_REF##*/}
-          if [ "$BRANCH" = "main" ]; then
-            TAG="prod-${IMAGE_TAG}"
-          else
-            TAG="staging-${IMAGE_TAG}"
-          fi
+          docker build -t $REGISTRY/customer-service:$IMAGE_TAG ./backend/customer_service
+          docker build -t $REGISTRY/order-service:$IMAGE_TAG ./backend/order_service
+          docker build -t $REGISTRY/product-service:$IMAGE_TAG ./backend/product_service
+          docker build -t $REGISTRY/frontend:$IMAGE_TAG ./frontend
 
-          echo "Using image tag: $TAG"
-
-          # Frontend
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG ./frontend
-          docker push ${{ env.ACR_LOGIN_SERVER }}/frontend:$TAG
-
-          # Backend services
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/customer-service:$TAG ./backend/customer_service
-          docker push ${{ env.ACR_LOGIN_SERVER }}/customer-service:$TAG
-
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/order-service:$TAG ./backend/order_service
-          docker push ${{ env.ACR_LOGIN_SERVER }}/order-service:$TAG
-
-          docker build -t ${{ env.ACR_LOGIN_SERVER }}/product-service:$TAG ./backend/product_service
-          docker push ${{ env.ACR_LOGIN_SERVER }}/product-service:$TAG
-
-      # 9️⃣ Logout
-      - name: Logout from Azure
-        run: az logout
-        if: always()
+      # 7️⃣ Push Docker images
+      - name: Push Docker images
+        run: |
+          docker push $REGISTRY/customer-service:$IMAGE_TAG
+          docker push $REGISTRY/order-service:$IMAGE_TAG
+          docker push $REGISTRY/product-service:$IMAGE_TAG
+          docker push $REGISTRY/frontend:$IMAGE_TAG
