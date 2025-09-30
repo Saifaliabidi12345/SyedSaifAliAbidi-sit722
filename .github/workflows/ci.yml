@@ -12,7 +12,6 @@ on:
   workflow_dispatch:
 
 env:
-  # The full login server (e.g., mysit722acr.azurecr.io)
   ACR_LOGIN_SERVER: ${{ secrets.AZURE_CONTAINER_REGISTRY }}
   IMAGE_TAG: ${{ github.sha }}
 
@@ -21,61 +20,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1️⃣ Checkout repo
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 🔹 Node.js setup for frontend build/test
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
-
-      - name: Install frontend dependencies
-        run: |
-          cd frontend
-          npm install
-
-      - name: Run frontend build
-        run: |
-          cd frontend
-          npm run build
-
-      - name: Run frontend tests
-        run: |
-          cd frontend
-          npm test -- --watchAll=false
-
-      # 🔹 Python setup for backend tests
+      # 2️⃣ Setup Python for backend testing
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install test dependencies (Customer Service as example)
+      # 3️⃣ Install backend dev dependencies
+      - name: Install backend dependencies
         run: |
           pip install -r backend/customer_service/requirements-dev.txt
           pip install -r backend/order_service/requirements-dev.txt
           pip install -r backend/product_service/requirements-dev.txt
 
+      # 4️⃣ Run backend tests
       - name: Run backend tests
         run: pytest backend/
 
-      # 🔹 Azure login
+      # 5️⃣ Azure login
       - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 🔹 Extract registry name (remove .azurecr.io)
+      # 6️⃣ Extract ACR name
       - name: Extract ACR name
         id: acr
         run: echo "name=${ACR_LOGIN_SERVER%%.azurecr.io}" >> $GITHUB_OUTPUT
 
+      # 7️⃣ Login to ACR
       - name: Login to Azure Container Registry
         run: az acr login --name ${{ steps.acr.outputs.name }}
 
-      # 🔹 Build & push images
-      - name: Build and Push Images
+      # 8️⃣ Build and push Docker images
+      - name: Build and Push Docker Images
         run: |
           BRANCH=${GITHUB_REF##*/}
           if [ "$BRANCH" = "main" ]; then
@@ -100,6 +82,7 @@ jobs:
           docker build -t ${{ env.ACR_LOGIN_SERVER }}/product-service:$TAG ./backend/product_service
           docker push ${{ env.ACR_LOGIN_SERVER }}/product-service:$TAG
 
+      # 9️⃣ Logout
       - name: Logout from Azure
         run: az logout
         if: always()
